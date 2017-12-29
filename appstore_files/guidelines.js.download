@@ -1,0 +1,51 @@
+'use strict';
+jQuery(document).ready(function($) {
+	var logic = {
+		// initialize events
+		init: function() {
+			this.sections = $('.expandable')
+				.find('a.scrollToAnchor').click($.proxy(this.onClickAnchor, this)).end()
+				.find('h1').click($.proxy(this.onClickSection, this)).end();
+			this.expandAll   = $('.expandAll').click($.proxy(this.onClickExpandAll, this));
+			this.collapseAll = $('.collapseAll').click($.proxy(this.onClickCollapseAll, this));
+			this.deepLink();
+		},
+		// for soft deep-linking, expand the relevant section
+		deepLink: function() {
+			if (location.hash) {
+				this.sections.find('a[href="' + location.hash + '"]').click();
+			}
+		},
+		// the onclick event for when a scrollToAnchor link is clicked, to expand the relevant section
+		onClickAnchor: function(event) {
+			this.sections.filter(':not(.expanded)').find('h1 a[href=' + $(event.target).attr('href') + ']').click();
+		},
+		// the onclick event for when a section is clicked to expand or contract
+		onClickSection: function(event) {
+			var section = $(event.target).closest('section').toggleClass('expanded');
+			location.hash = section.hasClass('expanded') ? section.find('h1 a').attr('href') : '';
+			return this.setCollapseExpand(this.numCollapsedSections() === 0);
+		},
+		// the onclick event for when the expand all link is clicked
+		onClickExpandAll: function() {
+			this.sections.addClass('expanded');
+			return this.setCollapseExpand(true);
+		},
+		// the onclick event for when the contract all link is clicked
+		onClickCollapseAll: function() {
+			this.sections.removeClass('expanded');
+			return this.setCollapseExpand(false);
+		},
+		// get the number of collapsed sections
+		numCollapsedSections: function() {
+			return this.sections.filter(':not(.expanded)').length;
+		},
+		// set the text of the link to either "expand all" or "collapse all"
+		setCollapseExpand: function(expanded) {
+			this.expandAll.toggle(!expanded);
+			this.collapseAll.toggle(expanded);
+			return false;
+		}
+	};
+	logic.init();
+});

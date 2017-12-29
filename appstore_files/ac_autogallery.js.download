@@ -1,0 +1,886 @@
+
+// = AC.AutoGallery =
+// 
+// {{{AC.AutoGallery}}} is a singleton with the purpose of making implementing SwapView instances
+// easier and consistent across sites.
+// 
+// It interprets the markup on the page and creates //gallery// instances as needed. This is
+// intended for simple Video SwapViews, image galleries, and SlideViewer hero galleries, for
+// example. It is not intended for complex one-off SwapView implementations.
+// 
+
+// === Dependencies ===
+// * Prototype
+// * Apple Core
+// * SwapView
+// * ViewMasterTracker
+// 
+
+// === Types ===
+// Types are sets of options that are used for the Viewers. Each type has a parent type who's options
+// are merged into the child type's at the point of requesting them.
+// 
+// A gallery's type is determined by a couple factors:
+// * {{{Classname}}} : If the gallery container has a class of the html classname attribute prefix
+//   ('autogallery-') + the name of the type, it will be considered of that type.
+// 
+// * {{{Qualifier}}} : To make initializing basic Viewers easier, you can provide a qualifier method to the
+//   type that will receive information about the gallery and determine whether or not it meets conditions
+//   that you set in order to be of that type.
+// 
+// See {{{AC.AutoGallery.Types}}} below for more information
+// 
+
+// === Example HTML Structure ===
+// 
+// TODO: Expand on markup requirements
+/*
+	<div class="gallery autogallery autogallery-slideshow autogallery-slide">
+		<header id="hero-gallery" class="gallery-view">
+			<figure class="gallery-content" id="hero-gallery-section-1>
+				...
+			</figure>
+			<figure class="gallery-content" id="hero-gallery-section-2>
+				...
+			</figure>
+		</header>
+		
+		<nav>
+			<ul class="simple-nav"><li>
+				<a href="hero-gallery-section-1" class="hero-gallery">...</a></li><li>
+				<a href="hero-gallery-section-2" class="hero-gallery">...</a>
+			</li></ul>
+		</nav>
+	</div>
+*/
+
+// == AC.AutoGallery ==
+
+if (typeof AC === 'undefined') {
+	var AC = {};
+}
+
+AC.AutoGallery = Object.synthesize({
+	// HTML Classname contastants
+	__classNames: {
+		wrapper: 'autogallery',
+		view: 'gallery-view',
+		content: 'gallery-content'
+	},
+
+	// Special trigger types for SwapViews
+	__specialSwapViewTriggers: [
+		'next',
+		'previous',
+		'SwapViewFirstSection',
+		'SwapViewPreviousSelection'
+	],
+
+	// Store instances of AC.ViewMaster.Viewer (or extensions thereof)
+	galleries: {},
+
+	// Store instances of AC.ViewMaster.Slideshow
+	slideshows: {},
+
+	// === {{{AC.AutoGallery.classPrefix}}} ===
+	// Prepended to type //name// to form class names that are observed.
+	// 
+	// Getter method returns as a string.
+	// 
+	// Setter method takes in a string, outputs the value of classPrefix
+	// after setting (as a string).
+	// 
+	_classPrefix: 'autogallery-',
+
+	setClassPrefix: function (str) {
+		if (typeof str === 'string') {
+			this._classPrefix = str;
+		}
+		return this._classPrefix;
+	},
+
+	// === {{{AC.AutoGallery.initialize()}}} ===
+	// Ran automatically onDOMready
+	// 
+	initialize: function () {
+		// Set up the viewers
+		$$('.' + this.__classNames.wrapper).each(function (wrapper) {
+			this.__setUpGallery(wrapper);
+		}.bind(this));
+
+		// Only for debug
+		// this.logTypes();
+	},
+
+	// === {{{AC.AutoGallery.__setUpGallery(wrapper)}}} ===
+	// A private method for setting up an autogallery based on the container.
+	// 
+	__setUpGallery: function (wrapper) {
+		var type, options, view, content, viewer;
+
+		// Get type of this gallery from registry
+		type = this.Types.Registries.gallery.match(wrapper, this._classPrefix);
+
+		// Get the options from the type object, which automatically
+		// extends all of the options from the parents.
+		options = type.getOptions();
+
+		// Get the view element.
+		view = wrapper.down('.' + this.__classNames.view);
+
+		// If the view element is valid to create a gallery, let's do that!
+		if (this.__galleryViewIsValid(view)) {
+			// Content is determined by elements with class="gallery-content" inside of the
+			// view plus all of the triggers inside of the gallery, parsed for duplicates
+			// and non-id triggers (e.g. #next)
+			content = wrapper.select('.' + this.__classNames.content);
+			content = content.concat(wrapper.select('a.' + view.id));
+			content = this.__parseContent(content);
+	
+			// Unless we've supplied an alternate Viewer (subclass), use the default
+			viewer = type.context.viewer || AC.ViewMaster.Viewer;
+			this.galleries[view.id] = new viewer(content, view.id, view.id, options);
+	
+			// Store some data, since we have it!
+			this.galleries[view.id].__type = type;
+			this.galleries[view.id].__wrapper = wrapper;
+	
+			this.__setUpDelegate(view, type);
+			this.__setUpSlideshow(view, wrapper);
+		}
+	},
+
+	__galleryViewIsValid: function (view) {
+		// Make sure view is actually an element
+		if (!Object.isElement(view)) {
+			try { console.error('View element not found for gallery.'); } catch (e) {}
+			return false;
+		}
+
+		// Validate that view has an ID
+		if (typeof view.id !== 'string' || view.id === '') {
+			try { console.error('Valid ID not found on view for gallery.'); } catch (e) {}
+			return false;
+		}
+
+		// Validate that view ID is unique
+		if (typeof this.galleries[view.id] !== 'undefined') {
+			try { console.error('View ID "' + view.id + '" is not unique.'); } catch (e) {}
+			return false;
+		}
+
+		return true;
+	},
+
+	// === {{{AC.AutoGallery.__setUpDelegate(view, type)}}} ===
+	// A private method for setting up an autogallery delegate on the view.
+	// 
+	__setUpDelegate: function (view, type) {
+		var self = this,
+		    delegate = {},
+		    className = this.__classNames.content,
+		    addGalleryContentClassName;
+
+		// add a className of 'gallery-content' to the section's content
+		addGalleryContentClassName = function (section) {
+			// Lots of qualifiers to validate this be fine and dandy
+			if (typeof section === 'object' && section.__autogalleryAddedGalleryContentClassName !== true && 'content' in section && Object.isElement(section.content)) {
+				section.content.addClassName(className);
+
+				// Only both adding it once
+				section.__autogalleryAddedGalleryContentClassName = true;
+			}
+		};
+
+		// On manageZ, let’s also manage the z-index of the other autogalleries
+		// on the page, we’ll put the ones not animating behind the animating one
+		delegate.manageZ = function (sender, outgoing, incoming, senderZIndex, outgoingZIndex, incomingZIndex) {
+			var behind = (typeof senderZIndex === 'number') ? senderZIndex - 1 : '',
+			    gallery, id;
+
+			for (id in self.galleries) {
+				gallery = self.galleries[id];
+				if (gallery.triggerClassName !== sender.triggerClassName) {
+					if (gallery.__wrapper) {
+						gallery.__wrapper.style.zIndex = behind;
+					}
+					if (gallery.view.view()) {
+						gallery.view.view().style.zIndex = behind;
+					}
+					if (gallery.currentSection && gallery.currentSection.content) {
+						gallery.currentSection.content.style.zIndex = behind;
+					}
+				}
+			}
+
+			// If there was a manageZ delegate method provided, we still want to call it
+			if (typeof type.context.delegate === 'object') {
+				if (typeof type.context.delegate.manageZ === 'function') {
+					type.context.delegate.manageZ(sender, outgoing, incoming, senderZIndex, outgoingZIndex, incomingZIndex);
+				}
+			}
+		};
+
+		// On willShow, add a html classname attribute of 'gallery-content' to the incomingView's content
+		// to cover elements that are loaded remotely / generated
+		delegate.willShow = function (sender, outgoingView, incomingView) {
+			addGalleryContentClassName(incomingView);
+
+			// If there was a willShow delegate method provided, we still want to call it
+			if (typeof type.context.delegate === 'object') {
+				if (typeof type.context.delegate.willShow === 'function') {
+					type.context.delegate.willShow(sender, outgoingView, incomingView);
+				}
+			}
+		};
+
+		// On didShow, add a html classname attribute of 'gallery-content' to the incomingView's content
+		// if it's the initial section in case it's deep linked and remotely loaded
+		delegate.didShow = function (sender, outgoingView, incomingView) {
+			addGalleryContentClassName(incomingView);
+
+			// If there was a willShow delegate method provided, we still want to call it
+			if (typeof type.context.delegate === 'object') {
+				if (typeof type.context.delegate.didShow === 'function') {
+					type.context.delegate.didShow(sender, outgoingView, incomingView);
+				}
+			}
+		};
+
+		// If there is a delegate supplied in the context, then let's use it!
+		if (typeof type.context.delegate === 'object') {
+			Object.extend(delegate, type.context.delegate);
+		}
+		this.galleries[view.id].setDelegate(delegate);
+	},
+
+	// === {{{AC.AutoGallery.__setUpSlideshow(view, wrapper)}}} ===
+	// A private method for setting up a slideshow on the view, if applicable.
+	// 
+	__setUpSlideshow: function (view, wrapper) {
+		var slideshowType;
+
+		// To have a slideshow, you must at least have the class 'autogallery-slideshow'
+		// on the gallery element, or a variation thereof to use a non-standard slideshow,
+		// e.g. 'autogallery-slideshow-hero'
+		if (wrapper.className.match('(^|\\s)' + this._classPrefix + 'slideshow' + '(-|\\s|$)')) {
+			slideshowType = this.Types.Registries.slideshow.match(wrapper, this._classPrefix + 'slideshow-');
+			this.slideshows[view.id] = new AC.ViewMaster.Slideshow(this.galleries[view.id], this._classPrefix + 'slideshow-trigger', slideshowType.getOptions());
+			this.slideshows[view.id].__type = slideshowType;
+		}
+	},
+
+	// === {{{AC.AutoGallery.addType(name, options, qualifier, parentTypeName, context)}}} ===
+	// Add a type to the Gallery Type Registry
+	// 
+	// See documentation for {{{AC.AutoGallery.Types.Type}}}
+
+	// Example:
+	/*
+		<script type="text/javascript">
+			Event.onDOMReady(function() {
+				...
+			});
+			
+			// Add type 'continuous-slider' to autogallery gallery type registry
+			AC.AutoGallery.addType('continuous-slider', { continuous: true }, Prototype.emptyFunction, 'slider', {});
+		</script>
+	*/
+
+	addType: function (name, options, qualifier, parentTypeName, context) {
+		this.Types.Registries.gallery.addType(name, options, qualifier, parentTypeName, context);
+	},
+
+	// === {{{AC.AutoGallery.addSlideshowType(name, options, qualifier, parentTypeName, context)}}} ===
+	// Add a type to the Slideshow Type Registry
+	// 
+	// See documentation for {{{AC.AutoGallery.Types.Type}}}
+
+	// Example:
+	/*
+		<script type="text/javascript">
+			Event.onDOMReady(function() {
+				...
+			});
+			
+			// Add type 'continuous-slider' to autogallery gallery type registry
+			AC.AutoGallery.addSlideshowType('short-delay', { delay: .15 }, Prototype.emptyFunction, 'standard', {});
+		</script>
+	*/
+
+	addSlideshowType: function (name, options, qualifier, parentTypeName, context) {
+		this.Types.Registries.slideshow.addType(name, options, qualifier, parentTypeName, context);
+	},
+
+	// === {{{AC.AutoGallery.__parseContent(elements)}}} ===
+	// Contents for gallery are defined by elements that exist within the wrapper
+	// element. This is an assumption autogallery makes.
+	// 
+	// This method will sift through the provided elements, which are assumed to be
+	// located within the wrapper element, and parse out duplicates or ones that
+	// are not associated with specific content sections (such as 'next').
+	// 
+	__parseContent: function (elements) {
+		var id, i, content = [],
+			orderedSections = [];
+
+		// Iterate over trigger elements provided
+		for (i = 0; i < elements.length; i++) {
+			// Get the ID that SwapView will associate this section with
+			if (elements[i].hasClassName(this.__classNames.content)) {
+				id = elements[i].getAttribute('id');
+			} else {
+				id = elements[i].getAttribute('href');
+				if (!!id.match('#')) {
+					id = id.split('#')[1];
+				} else {
+					try { console.error('ID for trigger was not found in HREF.'); } catch (e) {}
+				}
+			}
+
+			// Make sure we have something to work with here
+			if (typeof id === 'string' && id !== '') {
+				// Make sure the ID isn't a SwapView special trigger
+				if (!this.__specialSwapViewTriggers.include(id)) {
+					// Make sure this section hasn't already been accounted for
+					if (!orderedSections.include(id)) {
+						// Keep track of sections we've already seen
+						orderedSections.push(id);
+	
+						// Add this section to the content array
+						content.push(elements[i]);
+					}
+				}
+			} else {
+				try { console.error('ID for section was not valid.'); } catch (e) {}
+			}
+		}
+
+		return content;
+	},
+
+	// === {{{AC.AutoGallery.logTypes()}}} ===
+	// Method for debugging. This logs all the galleries by their
+	// ID and what 'type' they are. It also logs the slideshows
+	// by their galleries' IDs and what type of slideshow each is.
+	// 
+	logTypes: function () {
+		var i = 0, gallery, slideshow;
+
+		try { console.log('----------------------------------'); } catch (e) {}
+		try { console.log('	Gallery Types'); } catch (e) {}
+		try { console.log('----------------------------------'); } catch (e) {}
+
+		for (gallery in this.galleries) {
+			if (this.galleries.hasOwnProperty(gallery)) {
+				i++;
+				try { console.log(i + '. ' + gallery + ': ' + this.galleries[gallery].__type.name); } catch (e) {}
+			}
+		}
+		if (i === 0) {
+			try { console.log('(none)'); } catch (e) {}
+		}
+
+		try { console.log(''); } catch (e) {}
+
+		i = 0;
+		try { console.log('----------------------------------'); } catch (e) {}
+		try { console.log('	Slideshow Types'); } catch (e) {}
+		try { console.log('----------------------------------'); } catch (e) {}
+
+		for (slideshow in this.slideshows) {
+			if (this.slideshows.hasOwnProperty(slideshow)) {
+				i++;
+				try { console.log(i + '. ' + slideshow + ': ' + this.slideshows[slideshow].__type.name); } catch (e) {}
+			}
+		}
+		if (i === 0) {
+			try { console.log('(none)'); } catch (e) {}
+		}
+
+		try { console.log(''); } catch (e) {}
+
+	}
+});
+
+
+
+
+
+// = {{{AC.AutoGallery.Types}}} =
+// 
+AC.AutoGallery.Types = {};
+
+// == {{{AC.AutoGallery.Types.Registry}}} ==
+// The type registry is used to put types into useful groups that are
+// relevant to their intended use (e.g. 'gallery' vs. 'slideshow' types).
+// 
+// They are also used to match elements to a type based on the html classname,
+// qualifier function, and the type hierarchy. The model contains a structural
+// hierarchy of types, but the actual link is maintained by the 'parent' variable
+// in each type.
+//
+// The registry is also the appropriate place to create a new type, as it automatically
+// adds it to the model, lookup object, and does some validation.
+// 
+AC.AutoGallery.Types.Registry = Class.create({
+	__reservedNames: [
+		'trigger'
+	],
+
+	// === {{{AC.AutoGallery.Types.Registry.initialize()}}} ===
+	// Set up your model and lookup table
+	// 
+	initialize: function () {
+		this.__model = [];
+		this.__lookup = {};
+	},
+
+	// === {{{AC.AutoGallery.Types.Registry.addType(name, options, qualifier, parentTypeName, context)}}} ===
+	// Add a type to this registry
+	// 
+	// See documentation for {{{AC.AutoGallery.Types.Type}}}
+	// 
+	addType: function (name, options, qualifier, parentTypeName, context) {
+		// Make sure type name isn't reserved before 
+		if (this.__reservedNames.indexOf(name) !== -1) {
+			try { console.error('Cannot add type: Type name is reserved: ' + name); } catch (e) {}
+			return;
+		}
+
+		// Options are optional, but we at least need an object to extend
+		if (typeof options !== 'object') {
+			options = {};
+		}
+
+		// The only property that is required to create a new type is a name
+		if (typeof name === 'string') {
+			var parent = this.__lookup[parentTypeName] || this.__lookup['_base'];
+
+			// Warn me if we are overwriting an existing Type
+			if (typeof this.__lookup[name] !== 'undefined') {
+				try { console.error('Cannot overwrite existing Type: ' + name); } catch (e) {}
+				return;
+			}
+
+			// Create your new instance of Type and add it to the lookup
+			this.__lookup[name] = new AC.AutoGallery.Types.Type(name, options, qualifier, parent, context);
+
+			// If this is the first type at this index, create a new array to store it
+			if (typeof this.__model[this.__lookup[name].level()] === 'undefined') {
+				this.__model[this.__lookup[name].level()] = [];
+			}
+			// Add type to the model at your index level
+			this.__model[this.__lookup[name].level()].push(this.__lookup[name]);
+
+		} else {
+			if (typeof name !== 'string') {
+				try { console.error('Cannot add type: Type Name must be a string.'); } catch (e) {}
+			}
+		}
+	},
+
+	// === {{{AC.AutoGallery.Types.Registry.match(el, prefix)}}} ===
+	// 
+	match: function (el, prefix) {
+		var type = null;
+
+		// If we don't have an element, fail here
+		if (!Object.isElement(el)) {
+			try { console.error('An element is required to match against a type.'); } catch (e) {}
+			return false;
+		}
+
+		// If we don't have a prefix for our type, let's use an empty string
+		if (typeof prefix !== 'string') {
+			prefix = '';
+		}
+
+		// Try to match against the html classname attribute on the element
+		type = this.__matchName(el, prefix);
+		if (type !== null) {
+			return type;
+		}
+
+		// Try to match against the qualifiers
+		type = this.__matchQualifier(el, prefix);
+		if (type !== null) {
+			return type;
+		}
+
+		// Catch all (if no other types matched)
+		if (typeof this.__model[1] !== 'undefined') {
+			if (typeof this.__model[0] !== 'undefined') {
+				type = this.__model[1][0];
+			} else {
+				try { console.error('Catchall Type not defined'); } catch (e) {}
+			}
+		} else {
+			try { console.error('No non-_base types defined at index 1.'); } catch (e) {}
+		}
+		return type;
+	},
+
+	// === {{{AC.AutoGallery.Types.Registry.__matchName(el, prefix)}}} ===
+	// Test each type for a match based on html classname attribute (e.g. 'autogallery-image')
+	// 
+	__matchName: function (el, prefix) {
+		var i, j;
+
+		// Iterate through model from the index with highest specificity/level to lowest
+		for (i = this.__model.length - 1; i >= 0; i--) {
+			// Iterate through this level if the level is defined
+			// (in chronological order of when the type was defined)
+			if (typeof this.__model[i] !== 'undefined') {
+				for (j = this.__model[i].length - 1; j >= 0; j--) {
+					// The first type with a html classname attribute that matches
+					if (el.hasClassName(prefix + this.__model[i][j].name)) {
+						return this.__model[i][j];
+					}
+				}
+			} else {
+				try { console.error('No array of types exists at this level.'); } catch (e) {}
+			}
+		}
+
+		return null;
+	},
+
+	// === {{{AC.AutoGallery.Types.Registry.__matchQualifier(el, prefix)}}} ===
+	// Test each type for a match based on qualifier function
+	// 
+	__matchQualifier: function (el, prefix) {
+		var i, j;
+
+		for (i = this.__model.length - 1; i >= 0; i--) {
+			if (typeof this.__model[i] !== 'undefined') {
+				for (j = this.__model[i].length - 1; j >= 0; j--) {
+					if (typeof this.__model[i][j].qualifier === 'function') {
+						if (this.__model[i][j].qualifier(el, prefix) === true) {
+							return this.__model[i][j];
+						}
+					} else {
+						try { console.error('Qualifier for ' + this.__model[i][j].name + ' is not a function.'); } catch (e) {}
+					}
+				}
+			} else {
+				try { console.error('No array of types exists at this level.'); } catch (e) {}
+			}
+		}
+
+		return null;
+	},
+
+	// === {{{AC.AutoGallery.Types.Registry.reserveName(name)}}} ===
+	// 
+	reserveName: function (name) {
+		if (typeof name === 'string') {
+			if (this.__lookup.indexOf(name) === -1) {
+				this.__reservedNames.push(name);
+			} else {
+				try { console.error('Cannot reserve name: Type with name already exists.'); } catch (e) {}
+			}
+		} else {
+			try { console.error('Cannot reserve name: Name must be a string'); } catch (e) {}
+		}
+	}
+});
+
+
+
+
+
+// == AC.AutoGallery.Types.Type ==
+// 
+// A type is collection of properties in an object that is attributed to a unique identifier.
+// The intended use for this is for creating a set of 'options' to be used for another class
+// or function, but it can really be used for anything similar. A type is assumed to be
+// associated with an element on the page, which is probably associated with an instance of
+// a class.
+//
+// Types also have the notion of inheritance. You can define a parent type for any given type
+// and create a hierarchical link between the two types. This is used to extend the options
+// object with all parents to create inheritance within that object when getting the options.
+//
+// The qualifier is only used externally. A type registry will use the qualifier to match an
+// element to a type if it can not already be matched based on an html classname attribute.
+// The qualifier receives the element plus a string, and is expected to return exactly {{{true}}}
+// if that element should be of this type. Anything else is considered false.
+// 
+// The context can be used to store any other data that you might need related to your type.
+// Anything can be stored in the context, but some of the values might be considered by other
+// scripts, such as {{{AC.AutoGallery}}}, to be key values that allow for extra behavior to be
+// attributed to a particular type.
+// 
+AC.AutoGallery.Types.Type = Class.create({
+	// === {{{AC.AutoGallery.Types.Type.initialize()}}} ===
+	// 
+	// * {{{name}}} [**string**]: A unique identifier for this type. Also used for the html
+	//   classname attribute to decide whether or not a gallery is of this type (e.g. 'image'
+	//   would be the type if the classname was 'autogallery-image').
+	// 
+	// * {{{options}}} [**object**]: //(optional)// A list of options and values for those options. These
+	//   are the options that will be merged with the parents' and _base options to form the
+	//   options object passed to the instance of Viewer. Default is empty object, which will inherit
+	//   all parent options.
+	// 
+	// * {{{qualifier}}} [**function**]: //(optional)// a function that can be used to determine
+	//   whether or not a gallery is of a certain type without needing the classname attribute. Should
+	//   return true or false. Use Prototype.emptyFunction to opt out of having a qualifier
+	//   if you still want to define a {{{parentTypeName}}}. The qualifier function will be passed the
+	//   container element for the gallery/slideshow, etc and the prefix for the classname attribute.
+	// 
+	// * {{{parent}}} [**object**]: //(optional)// Link this type to a parent type,
+	//   which means this type will be more specific (higher index level) and will 
+	// 
+	// * {{{context}}} [**object**]: //(optional)// If you need to store more information in a type
+	//   that you will access later, you can put it inside of the context object. An example of when you
+	//   might use this would be for a delegate that is associated with a type.
+	// 
+	initialize: function (name, options, qualifier, parent, context) {
+		this.name = name;
+		this.options = options || {};
+		this.qualifier = typeof qualifier === 'function' ? qualifier : Prototype.emptyFunction;
+		this.parent = parent;
+		this.context = context || {};
+		this.level();
+	},
+
+	// === {{{AC.AutoGallery.Types.Type.getOptions()}}} ===
+	// Returns the options for this type, extended from the options of its parents', all the
+	// way back up to _base.
+	// 
+	getOptions: function () {
+		var parentOptions = (typeof this.parent === 'undefined') ? {} : this.parent.getOptions();
+		return Object.extend(parentOptions, this.options);
+	},
+
+	// === {{{AC.AutoGallery.Types.Type.level}}} ===
+	// The level tells us where our type is in the hierarchy of types related to this one.
+	// The level is the number of parents a type has (assuming the 0th parent is _base).
+	// 
+	// A _base type is only used within a type registry.
+	// 
+	__level: null,
+	level: function () {
+		if (this.name === '_base') {
+			return 0;
+		} else if (typeof this.parent === 'undefined' || typeof this.parent.name === '_base') {
+			return 1;
+		} else {
+			return this.parent.level() + 1;
+		}
+	}
+});
+
+
+
+
+
+// == Instantiate our Type Registries ==
+// 
+AC.AutoGallery.Types.Registries = {};
+AC.AutoGallery.Types.Registries.gallery = new AC.AutoGallery.Types.Registry();
+AC.AutoGallery.Types.Registries.slideshow = new AC.AutoGallery.Types.Registry();
+
+// == Default Gallery Types ==
+// 
+
+// * {{{_base}}} : '_base' is the parent type for all other types. It
+//   is not intended to be used directly, but instead its options are
+//   extended into the childrens' at the point of requesting them to
+//   instantiate a new Viewer.
+AC.AutoGallery.addType(
+	// name
+	'_base',
+
+	// options
+	{
+		manageZ: true,
+		heightFromFirstSection: true,
+		silentTriggers: true,
+		imageLinkAutoCaptions: true,
+		addSectionIdAsClassName: true,
+		useHTML5Tags: true
+	}
+);
+
+// * {{{image}}} : An 'image' gallery is a standard image gallery with
+//   a cross-fade animation. It can be used with simplenav triggers,
+//   thumbnails or textlinks. 
+AC.AutoGallery.addType(
+	// name
+	'image',
+
+	// options
+	{
+		useKeyboardNav: true,
+		discontinuousPreviousNext: true
+	}
+);
+
+// * {{{image-fadein}}} : An 'image' gallery is a standard image gallery with
+//   a cross-fade animation. It can be used with simplenav triggers,
+//   thumbnails or textlinks. 
+AC.AutoGallery.addType(
+	// name
+	'image-fadein',
+
+	// options
+	{
+		shouldAnimateFadeIn: true
+	},
+
+	// qualifier
+	Prototype.emptyFunction,
+
+	// parent
+	'image'
+);
+
+// * {{{slide}}} : A 'slide' gallery is more commonly referred to as a
+//   SlideViewer and is used mostly for hero galleries. It is also the
+//   gallery type that allows for touch events for iOS.
+AC.AutoGallery.addType(
+	// name
+	'slide',
+
+	// options
+	{
+		useKeyboardNav: true,
+		discontinuousPreviousNext: true,
+		useTouchEvents: true
+	},
+
+	// qualifier
+	function (el, prefix) {
+		var view, viewWidth, containerWidth;
+
+		// Get access to the view
+		view = el.down('.' + AC.AutoGallery.__classNames.view);
+		if (Object.isElement(view)) {
+			// Get widths of both the container and the view
+			viewWidth = view.getWidth();
+			containerWidth = el.getWidth();
+
+			// If the view is at least twice as wide as the container, assume
+			// that it's intended to be a slide viewer
+			if (viewWidth >= containerWidth * 2) {
+				return true;
+			}
+		}
+
+		return false;
+	},
+
+	// parentTypeName
+	'_base',
+
+	// context
+	{
+		viewer: AC.ViewMaster.SlideViewer
+	}
+);
+
+// * {{{video}}} : 'video' galleries are simple 'heightFromFirstSection'
+//   galleries where the video plays in a sort of overlapping container above
+//   the content that exists below.
+AC.AutoGallery.addType(
+	// name
+	'video',
+
+	// options
+	{
+		manageZ: 1010,
+		showFirstOnStopMovie: true,
+		ensureInView: true,
+		escapeToClose: true
+	},
+
+	// qualifier
+	function (el, prefix) {
+		var view, id, triggers;
+
+		// Get access to the view
+		view = el.down('.' + AC.AutoGallery.__classNames.view);
+
+		// If the view exists, get the ID
+		if (Object.isElement(view)) {
+			id = view.getAttribute('id');
+
+			// If there is a trigger inside of the view (assumed inside of the first section),
+			// then assume we're dealing with a video section.
+			if (typeof id === 'string' && typeof view.down('a.' + id) !== 'undefined') {
+				return true;
+			}
+		}
+
+		return false;
+	}
+);
+
+// == Default Slideshow Types ==
+// 
+
+// * {{{_base}}} : '_base' is the parent type for all other types. It
+//   is not intended to be used directly, but instead its options are
+//   extended into the childrens' at the point of requesting them to
+//   instanciate a new Viewer. You would want to define a new type if,
+//   for instance, one gallery on the page needed a different duration.
+AC.AutoGallery.addSlideshowType(
+	// name
+	'_base',
+
+	// options
+	{
+		autoplay: true,
+		stopOnUserInteraction: true
+	}
+);
+
+// * {{{standard}}} : 'standard' is the default slideshow. This would
+//   be used for an auto-rotating gallery with simple nav, for instance.
+//   The standard slideshow can be added with just the html classname attribute
+//   'autogallery-slideshow' since that is the string AC.AutoGallery
+//   looks for when choosing whether or not there is a slideshow and since
+//   standard is the default slideshow type.
+AC.AutoGallery.addSlideshowType(
+	// name
+	'standard',
+
+	// options
+	{
+		discontinuousPreviousNext: false,
+		stopAfterReturnToSection: false
+	}
+);
+
+// * {{{hero}}} : 'hero' slideshows make use of the 'discontinuousPreviousNext',
+//   'stopAfterReturnToSection', and 'autoplay' delay options.
+AC.AutoGallery.addSlideshowType(
+	'hero',
+
+	// options
+	{
+		autoplay: 2000,
+		delay: 7000,
+		stopAfterReturnToSection: 0,
+		discontinuousPreviousNext: false
+	}
+);
+
+// == Set up our AutoGalleries on DOMReady ==
+// 
+// Initialize AC.AutoGallery and set up click tracking
+// 
+Event.onDOMReady(function() {
+	AC.AutoGallery.initialize();
+
+	if (typeof AC.ViewMaster.Tracker === 'function') {
+		if (typeof window.tracker === 'undefined') {
+			window.tracker = new AC.ViewMaster.Tracker('click');
+		}
+	} else {
+		try { console.warn('/assets/core/scripts/view_master_tracker.js needs to be included on this page.'); } catch (e) {}
+	}
+});
