@@ -10,7 +10,7 @@
     <script src="http://maps.google.com/maps/api/js?sensor=false"></script>
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
 
-  <!-- Latest compiled JavaScript -->
+  <!-- Latest compiled JavaScript    -->
   <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
@@ -50,7 +50,7 @@ font-size: 20px;
 font-family: "Times New Roman", Times, serif;
 }
 
-.enquir{
+.enquir,p{
   color:white;
 }
 
@@ -168,6 +168,7 @@ padding:15px;
 
 .para ,p{
   color: black;
+  font-style: normal;
 }
 
 
@@ -308,17 +309,17 @@ we help create a <strong>Better </strong>Society.
       <div class="col-md-4 col-sm-6 ">
         <div class="row">
 
-            <h3 class="text-left"><i class=" fa fa-angellist"></i>&nbsp; User Friendly</h3>
+            <h3 class="text-left para"><i class=" fa fa-angellist"></i>&nbsp; User Friendly</h3>
             <p>The User Interface is designed with simplicity in mind. It is very simple to use and only the necessary details are displayed. Reach any feature within 3 clicks.</p>
 
         </div>
         <div class="row">
-            <h3 class="text-left"><i class="fa fa-pie-chart"></i>&nbsp; Statistical Data</h3>
+            <h3 class="text-left para"><i class="fa fa-pie-chart"></i>&nbsp; Statistical Data</h3>
             <p>Summarize your visitor count by visual statistics that help you get a bigger picture and maintains records of your house keeping services.</p>
 
         </div>
         <div class="row">
-            <h3 class="text-left"><i class="fa fa-pie-chart"></i>&nbsp; Statistical Data</h3>
+            <h3 class="text-left para"><i class="fa fa-pie-chart"></i>&nbsp; Statistical Data</h3>
             <p>Summarize your visitor count by visual statistics that help you get a bigger picture and maintains records of your house keeping services.</p>
 
         </div>
@@ -406,13 +407,19 @@ we help create a <strong>Better </strong>Society.
               <div class="col-md-4 text-center">
 
                       <h5 class="enquiry">Enquiry</h5><br>
-                      <form>
+                      <form action="dev.php" method="post">
                           <div class="form-group text-center">
-                              <input id="name" type="text" class="form-control" placeholder="Enter your name"><br>
+                              <input id="name" type="text" class="form-control" name="name" placeholder="Enter your name"><br>
                               <input type="text" class="form-control" id="phone" placeholder="Enter your phone number"><br>
                               <input type="text" class="form-control" id="email" placeholder="Enter your email"><br>
-                              <input type="text" class="form-control" placeholder="We're Interested in your services. Contact us."><br>
-                              <button type="submit" id="submit" class="btn text-center" style="width:140px;">Submit</button>
+                              <input type="text" class="form-control" id="message" value="We're Interested in your services. Contact us."><br>
+
+
+                              <p><img src="captcha.php" width="120" id="captchaimg" height="30" border="1" alt="CAPTCHA"></p>
+                              <p><input type="text" id="captcha" size="6" maxlength="5" name="captcha" value=""><br>
+                              <small class="enquir">copy the digits from the image into this box</small></p>
+
+                              <button type="submit" id="submit" align="right" class="btn text-left" style="width:120px;">Submit</button>
                           </div>
 
                       </form>
@@ -444,17 +451,17 @@ function functionName() {
    });
    $(".myclass").css({"height":$(window).height()});
 </script>
-
+<!-- validation -->
 <script>
 function myfunction() {
   $('#submit').click(function(e){
   if(!($("#name").val().match(/^[a-zA-Z]+$/)) || $("#name").val().length == 0){
-    alert("Please Input the correct values");
+    alert("Please Input the correct Name");
     e.preventDefault();
     return false;
   }
   if(!($("#phone").val().match(/^[0-9]+$/)) || $("#phone").val().length>11){
-    alert("please input the correct number");
+    alert("please type correct number");
     e.preventDefault();
     return false;
   }
@@ -463,6 +470,49 @@ function myfunction() {
     e.preventDefault();
     return false;
   }
+
+/*  if(!($("#captcha").val().match(/^[0-9]+$/)) || $("#captcha").val().length==0){
+    alert("Enter correct captcha");
+    e.preventDefault();
+    return false;
+  }
+*/
+
+
+
+
+  e.preventDefault();
+
+  function submit(){
+      // Initiate Variables With Form Content
+      var name = $("#name").val();
+      var phone = $("#phone").val();
+      var email = $("#email").val();
+      var message = $("#message").val();
+      var captcha = $("#captcha").val();
+      $.ajax({
+          type: "POST",
+          url: "dev.php",
+          data: "name=" + name + "&email=" + email + "&message=" + message + "&phone=" + phone + "&captcha=" + captcha,
+
+      });
+  }
+  function reset()
+  {
+    var name = $("#name").val('');
+    var phone = $("#phone").val('');
+    var email = $("#email").val('');
+    var captcha = $("#captcha").val('');
+  }
+  function formSuccess(){  }
+
+
+             var d = new Date();
+             $('#captchaimg').attr('src', 'captcha.php?' + d.getTime());
+
+
+  submit();
+reset();
   });
   $("#phone").on('keypress',function (evt){
   evt = evt || window.event;
@@ -472,6 +522,16 @@ function myfunction() {
   }else {
     evt.preventDefault();
   }
+});
+
+$("#name").on('keypress',function (evt){
+evt = evt || window.event;
+var charCode = evt.which || evt.keyCode;
+if(charCode >= 65 && charCode <= 122){
+  return true;
+}else {
+  evt.preventDefault();
+}
 });
 }
 $(document).ready(myfunction());
